@@ -1,3 +1,5 @@
+from datetime import date
+from sqlalchemy import func
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -20,6 +22,41 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
     role = db.Column(db.String(20), nullable=False, default="agent")
+
+class Policyholder(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    age = db.Column(db.Integer, nullable=False)
+    gender = db.Column(db.String(10))
+    city = db.Column(db.String(50))
+    email = db.Column(db.String(120), unique=True)
+    # one policyholder -> many policies
+    policies = db.relationship("Policy", backref="policyholder")
+
+
+class Policy(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    # foreign key = "this policy belongs to that policyholder"
+    policyholder_id = db.Column(
+        db.Integer, db.ForeignKey("policyholder.id"), nullable=False
+    )
+    policy_type = db.Column(db.String(30), nullable=False)  # health, motor, life, home
+    premium_amount = db.Column(db.Float, nullable=False)
+    sum_assured = db.Column(db.Float, nullable=False)
+    start_date = db.Column(db.Date, nullable=False)
+    end_date = db.Column(db.Date, nullable=False)
+    renewed = db.Column(db.Boolean)  # True = renewed, False = lapsed, empty = not decided yet
+    # one policy -> many payments
+    payments = db.relationship("Payment", backref="policy")
+
+
+class Payment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    policy_id = db.Column(db.Integer, db.ForeignKey("policy.id"), nullable=False)
+    due_date = db.Column(db.Date, nullable=False)
+    paid_date = db.Column(db.Date)  # empty = not paid
+    amount = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(20), nullable=False)  # on_time, late, missed
 
 
 @app.route("/")
@@ -104,6 +141,168 @@ def list_users():
         for u in users
     ])
 
+@app.route("/policyholders", methods=["POST"])
+@role_required("admin")
+def add_policyholder():
+    data = request.get_json()
+
+    holder = Policyholder(
+        name=data["name"],
+        age=data["age"],
+        gender=data.get("gender"),
+        city=data.get("city"),
+        email=data.get("email"),
+    )
+    db.session.add(holder)
+    db.session.commit()
+
+    return jsonify({"message": "Policyholder added", "id": holder.id}), 201
+
+
+@app.route("/policyholders", methods=["GET"])
+@jwt_required()
+
+
+def list_policyholders():
+    page = request.args.get("page", 1, type=int)
+    per_page = min(request.args.get("per_page", 20, type=int), 100)  # max 100
+    city = request.args.get("city")
+
+    query = Policyholder.query
+    if city:
+        query = query.filter_by(city=city)
+
+    result = query.paginate(page=page, per_page=per_page, error_out=False)
+
+    return jsonify({
+        "page": result.page,
+        "total_pages": result.pages,
+        "total": result.total,
+        "items": [
+            {"id": h.id, "name": h.name, "age": h.age, "gender": h.gender,
+             "city": h.city, "email": h.email}
+            for h in result.items
+        ],
+    })
+
+
+
+
+@app.route("/policyholders/<int:holder_id>", methods=["GET"])
+@jwt_required()
+def get_policyholder(holder_id):
+    holder = db.session.get(Policyholder, holder_id)
+    if not holder:
+        return jsonify({"error": "Policyholder not found"}), 404
+
+    return jsonify({
+        "id": holder.id, "name": holder.name, "age": holder.age,
+        "gender": holder.gender, "city": holder.city, "email": holder.email,
+        "policy_count": len(holder.policies),  # follows the relationship
+    })
+
+@app.route("/policyholders/<int:holder_id>/policies", methods=["POST"])
+@role_required("admin")
+def add_policy(holder_id):
+    holder = db.session.get(Policyholder, holder_id)
+    if not holder:
+        return jsonify({"error": "Policyholder not found"}), 404
+
+    data = request.get_json()
+    policy = Policy(
+        policyholder_id=holder.id,
+        policy_type=data["policy_type"],
+        premium_amount=data["premium_amount"],
+        sum_assured=data["sum_assured"],
+        start_date=date.fromisoformat(data["start_date"]),  # "2025-01-01"
+        end_date=date.fromisoformat(data["end_date"]),
+        renewed=data.get("renewed"),  # true / false / leave out if undecided
+    )
+    db.session.add(policy)
+    db.session.commit()
+
+    return jsonify({"message": "Policy added", "id": policy.id}), 201
+
+
+@app.route("/policyholders/<int:holder_id>/policies", methods=["GET"])
+@jwt_required()
+def list_policies(holder_id):
+    holder = db.session.get(Policyholder, holder_id)
+    if not holder:
+        return jsonify({"error": "Policyholder not found"}), 404
+
+    return jsonify([
+        {"id": p.id, "policy_type": p.policy_type,
+         "premium_amount": p.premium_amount, "sum_assured": p.sum_assured,
+         "start_date": p.start_date.isoformat(),
+         "end_date": p.end_date.isoformat(), "renewed": p.renewed}
+        for p in holder.policies
+    ])
+
+
+@app.route("/policies/<int:policy_id>/payments", methods=["POST"])
+@role_required("admin")
+def add_payment(policy_id):
+    policy = db.session.get(Policy, policy_id)
+    if not policy:
+        return jsonify({"error": "Policy not found"}), 404
+
+    data = request.get_json()
+    due = date.fromisoformat(data["due_date"])
+    paid = date.fromisoformat(data["paid_date"]) if data.get("paid_date") else None
+
+    # The server works out the status, not the person typing
+    if paid is None:
+        status = "missed" if due < date.today() else "pending"
+    elif paid <= due:
+        status = "on_time"
+    else:
+        status = "late"
+
+    payment = Payment(
+        policy_id=policy.id, due_date=due, paid_date=paid,
+        amount=data["amount"], status=status,
+    )
+    db.session.add(payment)
+    db.session.commit()
+
+    return jsonify({"message": "Payment added", "status": status}), 201
+
+
+@app.route("/policies/<int:policy_id>/payments", methods=["GET"])
+@jwt_required()
+def list_payments(policy_id):
+    policy = db.session.get(Policy, policy_id)
+    if not policy:
+        return jsonify({"error": "Policy not found"}), 404
+
+    return jsonify([
+        {"id": pay.id, "due_date": pay.due_date.isoformat(),
+         "paid_date": pay.paid_date.isoformat() if pay.paid_date else None,
+         "amount": pay.amount, "status": pay.status}
+        for pay in policy.payments
+    ])
+
+@app.route("/policyholders/summary", methods=["GET"])
+@jwt_required()
+def dataset_summary():
+    total_policies = Policy.query.count()
+    renewed = Policy.query.filter_by(renewed=True).count()
+
+    by_type = (db.session.query(Policy.policy_type, func.count(Policy.id))
+               .group_by(Policy.policy_type).all())
+    by_status = (db.session.query(Payment.status, func.count(Payment.id))
+                 .group_by(Payment.status).all())
+    avg_premium = db.session.query(func.avg(Policy.premium_amount)).scalar()
+
+    return jsonify({
+        "policyholders": Policyholder.query.count(),
+        "policies": total_policies,
+        "renewal_rate": round(renewed / total_policies, 3) if total_policies else None,
+        "policies_by_type": {t: c for t, c in by_type},
+        "payments_by_status": {s: c for s, c in by_status},
+        "average_premium": round(avg_premium, 2) if avg_premium else None,
+    })
 
 with app.app_context():
     db.create_all()
