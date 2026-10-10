@@ -1,5 +1,8 @@
-from datetime import date
+from datetime import date, timedelta
 from sqlalchemy import func
+import os
+import joblib
+import pandas as pd
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -12,7 +15,18 @@ from functools import wraps
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///renewal.db"
 app.config["JWT_SECRET_KEY"] = "change-this-secret-later"
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=2)
 jwt = JWTManager(app)
+# Load the trained model once, when the server starts
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "renewal_model.joblib")
+try:
+    renewal_model = joblib.load(MODEL_PATH)
+except FileNotFoundError:
+    renewal_model = None  # run train_model.py first
+
+# Risk bands based on the chance of renewing
+HIGH_RISK_BELOW = 0.50    # under 50% -> high risk of lapsing
+MEDIUM_RISK_BELOW = 0.70  # 50-70%    -> medium risk
 db = SQLAlchemy(app)
 
 
@@ -298,11 +312,106 @@ def dataset_summary():
     return jsonify({
         "policyholders": Policyholder.query.count(),
         "policies": total_policies,
-        "renewal_rate": round(renewed / total_policies, 3) if total_policies else None,
+        "renewal_rate": round(renewed / decided, 3) if decided else None,
         "policies_by_type": {t: c for t, c in by_type},
         "payments_by_status": {s: c for s, c in by_status},
         "average_premium": round(avg_premium, 2) if avg_premium else None,
     })
+
+def policy_features(policy):
+    """Turn one policy and its history into the clues the model was trained on."""
+    holder = policy.policyholder
+    payments = policy.payments
+    late = sum(1 for p in payments if p.status == "late")
+    missed = sum(1 for p in payments if p.status == "missed")
+    days_late = [(p.paid_date - p.due_date).days
+                 for p in payments if p.status == "late"]
+    return {
+        "age": holder.age,
+        "premium_amount": policy.premium_amount,
+        "sum_assured": policy.sum_assured,
+        "late_payments": late,
+        "missed_payments": missed,
+        "avg_days_late": round(sum(days_late) / len(days_late), 1) if days_late else 0,
+        "gender": holder.gender,
+        "city": holder.city,
+        "policy_type": policy.policy_type,
+    }
+
+
+def risk_level(renewal_probability):
+    if renewal_probability < HIGH_RISK_BELOW:
+        return "high"
+    if renewal_probability < MEDIUM_RISK_BELOW:
+        return "medium"
+    return "low"
+
+
+@app.route("/policies/<int:policy_id>/predict", methods=["GET"])
+@jwt_required()
+def predict_policy(policy_id):
+    if renewal_model is None:
+        return jsonify({"error": "Model not trained yet. Run train_model.py"}), 503
+
+    policy = db.session.get(Policy, policy_id)
+    if not policy:
+        return jsonify({"error": "Policy not found"}), 404
+
+    features = policy_features(policy)
+    prob = float(renewal_model.predict_proba(pd.DataFrame([features]))[0][1])
+
+    return jsonify({
+        "policy_id": policy.id,
+        "renewal_probability": round(prob, 3),
+        "lapse_probability": round(1 - prob, 3),
+        "risk_level": risk_level(prob),
+        "features_used": features,
+        "actual_outcome": policy.renewed,  # empty/null if not decided yet
+    })
+
+@app.route("/renewals/upcoming", methods=["GET"])
+@jwt_required()
+def upcoming_renewals():
+    if renewal_model is None:
+        return jsonify({"error": "Model not trained yet. Run train_model.py"}), 503
+
+    days = request.args.get("days", 60, type=int)
+    risk_filter = request.args.get("risk")      # high / medium / low
+    today = date.today()
+
+    policies = Policy.query.filter(
+        Policy.renewed.is_(None),               # outcome not known yet
+        Policy.end_date >= today,
+        Policy.end_date <= today + timedelta(days=days),
+    ).all()
+    if not policies:
+        return jsonify({"count": 0, "items": []})
+
+    # Score everyone in ONE call to the model (much faster than one by one)
+    feats = [policy_features(p) for p in policies]
+    probs = renewal_model.predict_proba(pd.DataFrame(feats))[:, 1]
+
+    items = []
+    for p, f, prob in zip(policies, feats, probs):
+        level = risk_level(float(prob))
+        if risk_filter and level != risk_filter:
+            continue
+        items.append({
+            "policy_id": p.id,
+            "name": p.policyholder.name,
+            "city": p.policyholder.city,
+            "policy_type": p.policy_type,
+            "end_date": p.end_date.isoformat(),
+            "days_left": (p.end_date - today).days,
+            "late_payments": f["late_payments"],
+            "missed_payments": f["missed_payments"],
+            "renewal_probability": round(float(prob), 3),
+            "risk_level": level,
+        })
+
+    items.sort(key=lambda x: x["renewal_probability"])   # riskiest first
+    return jsonify({"count": len(items), "items": items})
+
 
 with app.app_context():
     db.create_all()

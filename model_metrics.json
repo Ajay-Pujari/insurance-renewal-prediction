@@ -1,0 +1,17 @@
+{
+  "test_accuracy": 0.78,
+  "test_roc_auc": 0.813,
+  "cv_roc_auc": 0.746,
+  "trained_on_rows": 500,
+  "features": [
+    "age",
+    "premium_amount",
+    "sum_assured",
+    "late_payments",
+    "missed_payments",
+    "avg_days_late",
+    "gender",
+    "city",
+    "policy_type"
+  ]
+}
