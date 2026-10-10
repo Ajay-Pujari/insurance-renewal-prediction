@@ -72,6 +72,18 @@ class Payment(db.Model):
     amount = db.Column(db.Float, nullable=False)
     status = db.Column(db.String(20), nullable=False)  # on_time, late, missed
 
+class Campaign(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    policy_id = db.Column(db.Integer, db.ForeignKey("policy.id"), nullable=False)
+    risk_level = db.Column(db.String(10), nullable=False)
+    renewal_probability = db.Column(db.Float, nullable=False)  # score at the time
+    offer_type = db.Column(db.String(30), nullable=False)
+    offer_detail = db.Column(db.String(200), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="sent")  # sent, accepted, declined
+    outcome = db.Column(db.String(20))  # renewed or lapsed; empty until known
+    created_at = db.Column(db.Date, nullable=False, default=date.today)
+    policy = db.relationship("Policy", backref="campaigns")
+
 
 @app.route("/")
 
@@ -411,6 +423,195 @@ def upcoming_renewals():
 
     items.sort(key=lambda x: x["renewal_probability"])   # riskiest first
     return jsonify({"count": len(items), "items": items})
+
+def choose_offer(features, level):
+    """Pick an offer that matches the likely reason for leaving.
+    Returns (offer_type, offer_detail), or None if no offer is needed."""
+    if level == "high":
+        if features["missed_payments"] >= 2 or features["late_payments"] >= 4:
+            return ("flexible_payment",
+                    "Flexible payment dates plus a 7-day grace period")
+        if features["premium_amount"] > 25000:
+            return ("premium_discount", "10% discount on the renewal premium")
+        return ("personal_call",
+                "Personal call from a retention agent plus a 5% loyalty discount")
+    if level == "medium":
+        if features["late_payments"] >= 2:
+            return ("auto_pay", "Set up auto-pay and get a 3% discount")
+        return ("reminder_offer",
+                "Early renewal reminder with a 3% loyalty discount")
+    return None  # low risk: no offer
+
+def campaign_to_dict(c):
+    return {
+        "campaign_id": c.id,
+        "policy_id": c.policy_id,
+        "name": c.policy.policyholder.name,
+        "policy_type": c.policy.policy_type,
+        "end_date": c.policy.end_date.isoformat(),
+        "risk_level": c.risk_level,
+        "renewal_probability": c.renewal_probability,
+        "offer_type": c.offer_type,
+        "offer_detail": c.offer_detail,
+        "status": c.status,
+        "outcome": c.outcome,
+        "created_at": c.created_at.isoformat(),
+    }
+
+
+@app.route("/campaigns/run", methods=["POST"])
+@role_required("admin")
+def run_campaigns():
+    if renewal_model is None:
+        return jsonify({"error": "Model not trained yet. Run train_model.py"}), 503
+
+    data = request.get_json(silent=True) or {}
+    days = data.get("days", 60)
+    today = date.today()
+
+    # Policies that expire soon and whose outcome is not known yet
+    policies = Policy.query.filter(
+        Policy.renewed.is_(None),
+        Policy.end_date >= today,
+        Policy.end_date <= today + timedelta(days=days),
+    ).all()
+
+    created, skipped_low, already = [], 0, 0
+    if policies:
+        feats = [policy_features(p) for p in policies]
+        probs = renewal_model.predict_proba(pd.DataFrame(feats))[:, 1]
+
+        for p, f, prob in zip(policies, feats, probs):
+            level = risk_level(float(prob))
+            offer = choose_offer(f, level)
+            if offer is None:            # low risk: no offer needed
+                skipped_low += 1
+                continue
+            if p.campaigns:              # already contacted: don't repeat
+                already += 1
+                continue
+            campaign = Campaign(
+                policy_id=p.id, risk_level=level,
+                renewal_probability=round(float(prob), 3),
+                offer_type=offer[0], offer_detail=offer[1],
+            )
+            db.session.add(campaign)
+            created.append(campaign)
+        db.session.commit()
+
+    return jsonify({
+        "created": len(created),
+        "skipped_low_risk": skipped_low,
+        "already_contacted": already,
+        "campaigns": [campaign_to_dict(c) for c in created],
+    }), 201
+
+
+@app.route("/campaigns", methods=["GET"])
+@jwt_required()
+def list_campaigns():
+    query = Campaign.query
+    risk = request.args.get("risk")
+    status = request.args.get("status")
+    if risk:
+        query = query.filter_by(risk_level=risk)
+    if status:
+        query = query.filter_by(status=status)
+
+    campaigns = query.order_by(Campaign.renewal_probability).all()  # riskiest first
+    return jsonify({"count": len(campaigns),
+                    "items": [campaign_to_dict(c) for c in campaigns]})
+@app.route("/campaigns/<int:campaign_id>/response", methods=["PATCH"])
+@jwt_required()
+def respond_to_campaign(campaign_id):
+    campaign = db.session.get(Campaign, campaign_id)
+    if not campaign:
+        return jsonify({"error": "Campaign not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    if status not in ("accepted", "declined"):
+        return jsonify({"error": "status must be 'accepted' or 'declined'"}), 400
+
+    campaign.status = status
+    db.session.commit()
+    return jsonify(campaign_to_dict(campaign))
+
+
+@app.route("/policies/<int:policy_id>/renewal", methods=["POST"])
+@role_required("admin")
+def record_outcome(policy_id):
+    policy = db.session.get(Policy, policy_id)
+    if not policy:
+        return jsonify({"error": "Policy not found"}), 404
+    if policy.renewed is not None:
+        return jsonify({"error": "Outcome already recorded for this policy"}), 400
+
+    data = request.get_json(silent=True) or {}
+    renewed = data.get("renewed")
+    if not isinstance(renewed, bool):
+        return jsonify({"error": "renewed must be true or false"}), 400
+
+    policy.renewed = renewed
+    for c in policy.campaigns:          # copy the result onto every campaign
+        c.outcome = "renewed" if renewed else "lapsed"
+    db.session.commit()
+
+    return jsonify({
+        "policy_id": policy.id,
+        "renewed": policy.renewed,
+        "campaigns_updated": len(policy.campaigns),
+    })
+
+@app.route("/campaigns/stats", methods=["GET"])
+@jwt_required()
+def campaign_stats():
+    campaigns = Campaign.query.all()
+    accepted = [c for c in campaigns if c.status == "accepted"]
+    declined = [c for c in campaigns if c.status == "declined"]
+    waiting = [c for c in campaigns if c.status == "sent"]
+    known = [c for c in campaigns if c.outcome is not None]  # final result known
+
+    def rate(part, whole):
+        return round(part / whole, 3) if whole else None
+
+    def renewal_rate(group):
+        done = [c for c in group if c.outcome is not None]
+        return rate(sum(1 for c in done if c.outcome == "renewed"), len(done))
+
+    # Results for each type of offer
+    by_offer = {}
+    for c in campaigns:
+        row = by_offer.setdefault(c.offer_type, {
+            "sent": 0, "accepted": 0, "outcomes_known": 0, "renewed": 0})
+        row["sent"] += 1
+        if c.status == "accepted":
+            row["accepted"] += 1
+        if c.outcome is not None:
+            row["outcomes_known"] += 1
+            if c.outcome == "renewed":
+                row["renewed"] += 1
+    for row in by_offer.values():
+        row["renewal_rate"] = rate(row["renewed"], row["outcomes_known"])
+
+    # The model's scores say how many would renew WITHOUT any offer
+    expected = sum(c.renewal_probability for c in known)
+    actual = sum(1 for c in known if c.outcome == "renewed")
+
+    return jsonify({
+        "campaigns_total": len(campaigns),
+        "awaiting_response": len(waiting),
+        "accepted": len(accepted),
+        "declined": len(declined),
+        "acceptance_rate": rate(len(accepted), len(accepted) + len(declined)),
+        "outcomes_known": len(known),
+        "renewal_rate_accepted": renewal_rate(accepted),
+        "renewal_rate_declined": renewal_rate(declined),
+        "expected_renewals_without_offer": round(expected, 1),
+        "actual_renewals": actual,
+        "extra_renewals": round(actual - expected, 1),
+        "by_offer_type": by_offer,
+    })
 
 
 with app.app_context():
