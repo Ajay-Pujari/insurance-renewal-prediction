@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Renewal Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+  body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f4f6fa; color: #1f2937; }
+  header { background: #1e3a5f; color: white; padding: 14px 24px;
+           display: flex; justify-content: space-between; align-items: center; }
+  main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+  .card { background: white; border-radius: 10px; padding: 20px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  #login-box { max-width: 340px; margin: 80px auto; }
+  input { width: 100%; padding: 10px; margin: 6px 0 14px; box-sizing: border-box;
+          border: 1px solid #ccc; border-radius: 6px; }
+  button { background: #2563eb; color: white; border: 0; padding: 10px 18px;
+           border-radius: 6px; cursor: pointer; }
+  button.secondary { background: transparent; border: 1px solid white; padding: 6px 12px; }
+  button.small { padding: 4px 10px; margin: 2px 4px 2px 0; font-size: 12px; }
+  button.green { background: #16a34a; }
+  button.red { background: #dc2626; }
+  button.grey { background: #6b7280; }
+  .error { color: #b91c1c; margin-top: 10px; }
+  .ok { color: #15803d; margin-top: 10px; }
+  .hidden { display: none; }
+  .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+          gap: 14px; margin-bottom: 20px; }
+  .kpi .num { font-size: 28px; font-weight: 700; }
+  .kpi .lbl { color: #6b7280; font-size: 13px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px; margin-bottom: 20px; }
+  .chart-box { position: relative; height: 260px; }
+  .note { color: #6b7280; font-size: 13px; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center;
+             flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+  th { background: #f9fafb; font-size: 12px; text-transform: uppercase; color: #6b7280; }
+  .badge { padding: 2px 8px; border-radius: 10px; color: white; font-size: 12px; }
+  .b-high { background: #dc2626; } .b-medium { background: #f59e0b; } .b-low { background: #16a34a; }
+  select { padding: 6px; border-radius: 6px; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+
+<header>
+  <strong>Insurance Renewal Dashboard</strong>
+  <span id="user-info" class="hidden">
+    <span id="user-text"></span>
+    <button class="secondary" onclick="logout()">Log out</button>
+  </span>
+</header>
+
+<main>
+  <!-- Login box -->
+  <div id="login-box" class="card">
+    <h3>Log in</h3>
+    <label>Email</label>
+    <input id="email" type="email" placeholder="lucky@test.com">
+    <label>Password</label>
+    <input id="password" type="password">
+    <button onclick="login()">Log in</button>
+    <div id="login-error" class="error"></div>
+  </div>
+
+  <!-- Dashboard (hidden until logged in) -->
+  <div id="dashboard" class="hidden">
+    <div class="top">
+      <h2 id="welcome" style="margin:0"></h2>
+      <button onclick="loadData()">Refresh</button>
+    </div>
+    <div id="data-error" class="error"></div>
+
+    <div class="kpis">
+      <div class="card kpi"><div class="num" id="k-policies">-</div><div class="lbl">Total policies</div></div>
+      <div class="card kpi"><div class="num" id="k-rate">-</div><div class="lbl">Overall renewal rate</div></div>
+      <div class="card kpi"><div class="num" id="k-upcoming">-</div><div class="lbl">Upcoming renewals</div></div>
+      <div class="card kpi"><div class="num" id="k-high">-</div><div class="lbl">High-risk upcoming</div></div>
+      <div class="card kpi"><div class="num" id="k-campaigns">-</div><div class="lbl">Campaigns sent</div></div>
+      <div class="card kpi"><div class="num" id="k-accept">-</div><div class="lbl">Offer acceptance</div></div>
+    </div>
+
+    <div class="charts">
+      <div class="card"><h4>Upcoming renewals by risk</h4><div class="chart-box"><canvas id="ch-risk"></canvas></div></div>
+      <div class="card"><h4>Policies by type</h4><div class="chart-box"><canvas id="ch-type"></canvas></div></div>
+      <div class="card"><h4>Payments by status</h4><div class="chart-box"><canvas id="ch-pay"></canvas></div></div>
+      <div class="card"><h4>Renewal rate by offer type</h4><div class="chart-box"><canvas id="ch-offer"></canvas></div></div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px">
+      <h4 style="margin-top:0">Did the offers help?</h4>
+      <p id="offer-result"></p>
+      <p class="note">n = customers whose final result is known. Small groups are unreliable.
+        The customer responses in this demo are simulated.</p>
+    </div>
+
+    <!-- At-risk customer work list -->
+    <div class="card">
+      <div class="toolbar">
+        <h4 style="margin:0">Upcoming renewals (riskiest first)</h4>
+        <div>
+          <label>Show: </label>
+          <select id="risk-filter" onchange="renderTable()">
+            <option value="all">All</option>
+            <option value="high">High risk</option>
+            <option value="medium">Medium risk</option>
+            <option value="low">Low risk</option>
+          </select>
+          <span id="run-box" class="hidden">
+            <button onclick="runCampaigns()">Run campaign</button>
+          </span>
+        </div>
+      </div>
+      <div id="msg"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Customer</th><th>Policy</th><th>Days left</th><th>Late</th><th>Missed</th>
+                <th>Renewal chance</th><th>Risk</th><th>Offer</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="risk-rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+  let token = sessionStorage.getItem("token");
+  let currentRole = null;
+  let upcomingItems = [];
+  let campaignByPolicy = {};
+  const charts = {};
+
+  // Call the API with the saved token; go back to login if it is no longer valid
+  async function api(path, options = {}) {
+    options.headers = Object.assign({}, options.headers, { Authorization: "Bearer " + token });
+    const res = await fetch(path, options);
+    if (res.status === 401 || res.status === 422) {
+      logout();
+      throw new Error("Session expired. Please log in again.");
+    }
+    return res.json();
+  }
+
+  async function login() {
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    const res = await fetch("/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      document.getElementById("login-error").textContent = data.error || "Login failed";
+      return;
+    }
+    token = data.access_token;
+    sessionStorage.setItem("token", token);
+    document.getElementById("login-error").textContent = "";
+    showDashboard();
+  }
+
+  async function showDashboard() {
+    try {
+      const me = await api("/profile");
+      currentRole = me.role;
+      document.getElementById("user-text").textContent = me.name + " (" + me.role + ")  ";
+      document.getElementById("welcome").textContent = "Welcome, " + me.name;
+      document.getElementById("login-box").classList.add("hidden");
+      document.getElementById("user-info").classList.remove("hidden");
+      document.getElementById("dashboard").classList.remove("hidden");
+      // Only admins see the "Run campaign" button
+      document.getElementById("run-box").classList.toggle("hidden", currentRole !== "admin");
+      loadData();
+    } catch (err) {
+      console.log(err.message);
+    }
+  }
+
+  function logout() {
+    sessionStorage.removeItem("token");
+    token = null;
+    currentRole = null;
+    document.getElementById("dashboard").classList.add("hidden");
+    document.getElementById("user-info").classList.add("hidden");
+    document.getElementById("login-box").classList.remove("hidden");
+  }
+
+  // Draw (or redraw) a chart on the canvas with this id
+  function drawChart(id, config) {
+    if (charts[id]) charts[id].destroy();
+    charts[id] = new Chart(document.getElementById(id), config);
+  }
+
+  function pct(x) {
+    return (x === null || x === undefined) ? "-" : Math.round(x * 100) + "%";
+  }
+
+  function message(text, isError) {
+    const box = document.getElementById("msg");
+    box.textContent = text;
+    box.className = isError ? "error" : "ok";
+  }
+
+  async function loadData() {
+    document.getElementById("data-error").textContent = "";
+    try {
+      // Ask the four API routes at the same time
+      const [summary, stats, upcoming, campaigns] = await Promise.all([
+        api("/policyholders/summary"),
+        api("/campaigns/stats"),
+        api("/renewals/upcoming?days=60"),
+        api("/campaigns"),
+      ]);
+
+      // Remember each policy's campaign so the table can show it
+      campaignByPolicy = {};
+      campaigns.items.forEach(c => { campaignByPolicy[c.policy_id] = c; });
+      upcomingItems = upcoming.items;
+
+      // Count upcoming policies per risk level
+      const risk = { high: 0, medium: 0, low: 0 };
+      upcoming.items.forEach(item => { risk[item.risk_level] += 1; });
+
+      // Cards
+      document.getElementById("k-policies").textContent = summary.policies;
+      document.getElementById("k-rate").textContent = pct(summary.renewal_rate);
+      document.getElementById("k-upcoming").textContent = upcoming.count;
+      document.getElementById("k-high").textContent = risk.high;
+      document.getElementById("k-campaigns").textContent = stats.campaigns_total;
+      document.getElementById("k-accept").textContent = pct(stats.acceptance_rate);
+
+      // Chart 1: risk of upcoming renewals
+      drawChart("ch-risk", {
+        type: "doughnut",
+        data: {
+          labels: ["High", "Medium", "Low"],
+          datasets: [{ data: [risk.high, risk.medium, risk.low],
+                       backgroundColor: ["#dc2626", "#f59e0b", "#16a34a"] }],
+        },
+        options: { maintainAspectRatio: false },
+      });
+
+      // Chart 2: policies by type
+      drawChart("ch-type", {
+        type: "bar",
+        data: {
+          labels: Object.keys(summary.policies_by_type),
+          datasets: [{ label: "Policies", data: Object.values(summary.policies_by_type),
+                       backgroundColor: "#2563eb" }],
+        },
+        options: { maintainAspectRatio: false, plugins: { legend: { display: false } } },
+      });
+
+      // Chart 3: payments by status
+      const payColors = { on_time: "#16a34a", late: "#f59e0b", missed: "#dc2626", pending: "#9ca3af" };
+      const payLabels = Object.keys(summary.payments_by_status);
+      drawChart("ch-pay", {
+        type: "doughnut",
+        data: {
+          labels: payLabels,
+          datasets: [{ data: Object.values(summary.payments_by_status),
+                       backgroundColor: payLabels.map(s => payColors[s] || "#6b7280") }],
+        },
+        options: { maintainAspectRatio: false },
+      });
+
+      // Chart 4: renewal rate for each offer type (with n = known results)
+      const offers = Object.entries(stats.by_offer_type);
+      drawChart("ch-offer", {
+        type: "bar",
+        data: {
+          labels: offers.map(([name, v]) => name + " (n=" + v.outcomes_known + ")"),
+          datasets: [{ label: "Renewal rate (%)",
+                       data: offers.map(([name, v]) => Math.round((v.renewal_rate || 0) * 100)),
+                       backgroundColor: "#7c3aed" }],
+        },
+        options: {
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true, max: 100 } },
+        },
+      });
+
+      // Sentence about offer results
+      const extra = stats.extra_renewals;
+      document.getElementById("offer-result").textContent =
+        "Actual renewals: " + stats.actual_renewals + " vs " +
+        stats.expected_renewals_without_offer + " expected without offers (" +
+        (extra >= 0 ? "+" : "") + extra + "). Accepted offers renewed at " +
+        pct(stats.renewal_rate_accepted) + ", declined at " + pct(stats.renewal_rate_declined) + ".";
+
+      renderTable();
+    } catch (err) {
+      document.getElementById("data-error").textContent = err.message;
+    }
+  }
+
+  // ---------- Work list table ----------
+  function addCell(tr, text) {
+    const td = document.createElement("td");
+    td.textContent = text;      // textContent (not innerHTML) keeps names from injecting HTML
+    tr.appendChild(td);
+    return td;
+  }
+
+  function makeButton(label, onclick, cls) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.className = "small " + (cls || "");
+    b.onclick = onclick;
+    return b;
+  }
+
+  function renderTable() {
+    const filter = document.getElementById("risk-filter").value;
+    const body = document.getElementById("risk-rows");
+    body.innerHTML = "";
+
+    const rows = upcomingItems.filter(i => filter === "all" || i.risk_level === filter);
+    if (rows.length === 0) {
+      const tr = document.createElement("tr");
+      const td = addCell(tr, "No policies match this filter.");
+      td.colSpan = 9;
+      body.appendChild(tr);
+      return;
+    }
+
+    rows.forEach(item => {
+      const c = campaignByPolicy[item.policy_id];
+      const tr = document.createElement("tr");
+
+      addCell(tr, item.name);
+      addCell(tr, item.policy_type);
+      addCell(tr, item.days_left);
+      addCell(tr, item.late_payments);
+      addCell(tr, item.missed_payments);
+      addCell(tr, pct(item.renewal_probability));
+
+      const riskTd = document.createElement("td");
+      const badge = document.createElement("span");
+      badge.className = "badge b-" + item.risk_level;
+      badge.textContent = item.risk_level;
+      riskTd.appendChild(badge);
+      tr.appendChild(riskTd);
+
+      if (c) {
+        addCell(tr, c.offer_detail + " [" + c.status + "]");
+      } else {
+        addCell(tr, item.risk_level === "low" ? "No offer needed" : "Not contacted yet");
+      }
+
+      // Action buttons depend on the campaign state and the user's role
+      const actions = document.createElement("td");
+      if (c && c.status === "sent") {
+        actions.appendChild(makeButton("Accepted", () => respond(c.campaign_id, "accepted"), "green"));
+        actions.appendChild(makeButton("Declined", () => respond(c.campaign_id, "declined"), "grey"));
+      }
+      if (currentRole === "admin" && c) {
+        actions.appendChild(makeButton("Renewed", () => recordOutcome(item.policy_id, true), "green"));
+        actions.appendChild(makeButton("Lapsed", () => recordOutcome(item.policy_id, false), "red"));
+      }
+      tr.appendChild(actions);
+
+      body.appendChild(tr);
+    });
+  }
+
+  async function respond(campaignId, status) {
+    const r = await api("/campaigns/" + campaignId + "/response", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    message(r.error ? r.error : "Response recorded: " + status + ".", !!r.error);
+    loadData();
+  }
+
+  async function recordOutcome(policyId, renewed) {
+    if (!confirm("Record this policy as " + (renewed ? "RENEWED" : "LAPSED") +
+                 "? This cannot be undone.")) return;
+    const r = await api("/policies/" + policyId + "/renewal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ renewed }),
+    });
+    message(r.error ? r.error : "Outcome recorded: " + (renewed ? "renewed" : "lapsed") + ".", !!r.error);
+    loadData();
+  }
+
+  async function runCampaigns() {
+    const r = await api("/campaigns/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days: 60 }),
+    });
+    message(r.error ? r.error :
+      "Campaign run: " + r.created + " new offers, " + r.already_contacted +
+      " already contacted, " + r.skipped_low_risk + " low-risk skipped.", !!r.error);
+    loadData();
+  }
+
+  // If a token was saved earlier in this tab, skip the login box
+  if (token) { showDashboard(); }
+</script>
+</body>
+</html>

@@ -3,15 +3,18 @@
 Insurers lose customers at renewal time without early warning. This system predicts
 which policyholders are likely to lapse, so the insurer can run retention outreach early.
 
+![Dashboard](docs/dashboard.png)
+
 ## Modules
 1. Authentication & Role Management (done)
 2. Policyholder Data Management (done)
 3. Renewal Prediction Engine (done)
 4. Retention Campaign Service (done)
-5. Analytics Dashboard
+5. Analytics Dashboard (done)
 
 ## Tech Stack
-Python, Flask, SQLAlchemy, SQLite, JWT (Flask-JWT-Extended), pandas, scikit-learn
+Python, Flask, SQLAlchemy, SQLite, JWT (Flask-JWT-Extended), pandas, scikit-learn,
+HTML/JavaScript, Chart.js
 
 ## How to run
     python -m venv venv
@@ -30,10 +33,25 @@ Start the server and create the first admin user:
     python app.py
     POST /register  {"name": "...", "email": "...", "password": "...", "role": "admin"}
 
+Open the dashboard at http://127.0.0.1:5000/dashboard and log in.
+
 Run the retention campaign (admin), then optionally simulate customer behaviour:
 
     POST /campaigns/run  {"days": 60}
     python simulate_responses.py
+
+## Dashboard
+A web page that calls the API with the user's login token. It shows summary cards, four
+charts (risk of upcoming renewals, policies by type, payments by status, renewal rate by
+offer type) and a work list of upcoming renewals, riskiest first.
+
+| Role | Can do |
+|---|---|
+| Agent | View everything, record whether a customer accepted or declined an offer |
+| Admin | Everything an agent can, plus run campaigns and record final renewal outcomes |
+
+Hiding buttons only tidies the page. Permissions are enforced by the API, so an agent who
+calls an admin route directly still gets "Access denied".
 
 ## API endpoints
 | Method | Route | Access |
@@ -55,6 +73,7 @@ Run the retention campaign (admin), then optionally simulate customer behaviour:
 | PATCH | /campaigns/<id>/response | logged-in |
 | POST | /policies/<id>/renewal | admin only |
 | GET | /campaigns/stats | logged-in |
+| GET | /dashboard | public page (data needs login) |
 
 ## Prediction model
 Random Forest classifier (scikit-learn pipeline with one-hot encoding). Features: age,
@@ -99,3 +118,4 @@ of renewal. It only demonstrates the tracking pipeline; it is not evidence that 
 - The JWT secret key is hard-coded in `app.py` and will move to a `.env` file.
 - The model is trained once on synthetic data and is not retrained automatically.
 - Campaign "sending" is simulated: offers are recorded but no email or SMS is sent.
+- The dashboard loads Chart.js from a CDN, so it needs an internet connection.

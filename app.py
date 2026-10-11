@@ -3,7 +3,7 @@ from sqlalchemy import func
 import os
 import joblib
 import pandas as pd
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import (
@@ -314,6 +314,7 @@ def list_payments(policy_id):
 def dataset_summary():
     total_policies = Policy.query.count()
     renewed = Policy.query.filter_by(renewed=True).count()
+    decided = Policy.query.filter(Policy.renewed.isnot(None)).count()
 
     by_type = (db.session.query(Policy.policy_type, func.count(Policy.id))
                .group_by(Policy.policy_type).all())
@@ -612,6 +613,10 @@ def campaign_stats():
         "extra_renewals": round(actual - expected, 1),
         "by_offer_type": by_offer,
     })
+
+@app.route("/dashboard")
+def dashboard():
+    return render_template("dashboard.html")
 
 
 with app.app_context():
