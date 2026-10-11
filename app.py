@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from functools import wraps
 
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, redirect
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -95,10 +95,8 @@ class Campaign(db.Model):
 
 
 @app.route("/")
-
-
 def home():
-    return "Insurance Renewal System is running!"
+    return redirect("/dashboard")
 
 
 @app.route("/register", methods=["POST"])
