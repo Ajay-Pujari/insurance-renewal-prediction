@@ -46,6 +46,11 @@ class User(db.Model):
     password = db.Column(db.String(200), nullable=False)
     role = db.Column(db.String(20), nullable=False, default="agent")
 
+@jwt.token_in_blocklist_loader
+def user_still_exists(jwt_header, jwt_payload):
+    # True means "reject this token": the account was removed
+    return db.session.get(User, int(jwt_payload["sub"])) is None
+
 class Policyholder(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -99,12 +104,8 @@ def home():
     return redirect("/dashboard")
 
 
-@app.route("/register", methods=["POST"])
-
-
-@app.route("/register", methods=["POST"])
-def register():
-    data = request.get_json(silent=True) or {}
+def create_agent_account(data):
+    """Shared by /register and /admin/agents. Always creates an agent."""
     name = (data.get("name") or "").strip()
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
@@ -118,17 +119,20 @@ def register():
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "Email already registered"}), 400
 
-    # The caller can never choose a role: everyone who registers is an agent
-    new_user = User(
-        name=name,
-        email=email,
-        password=generate_password_hash(password),
-        role="agent",
-    )
-    db.session.add(new_user)
+    db.session.add(User(name=name, email=email, role="agent",
+                        password=generate_password_hash(password)))
     db.session.commit()
+    return jsonify({"message": "Agent account created", "email": email}), 201
 
-    return jsonify({"message": "User registered successfully"}), 201
+
+@app.route("/register", methods=["POST"])
+def register():
+    # Public sign-up is off unless ALLOW_REGISTRATION=1 is set
+    if os.environ.get("ALLOW_REGISTRATION") != "1":
+        return jsonify({"error": "Registration is closed. Ask an admin to create your account."}), 403
+    return create_agent_account(request.get_json(silent=True) or {})
+
+
 
 
 @app.route("/login", methods=["POST"])
@@ -199,6 +203,24 @@ def add_policyholder():
     db.session.commit()
 
     return jsonify({"message": "Policyholder added", "id": holder.id}), 201
+@app.route("/admin/agents", methods=["POST"])
+@role_required("admin")
+def admin_create_agent():
+    return create_agent_account(request.get_json(silent=True) or {})
+
+@app.route("/admin/users/<int:user_id>", methods=["DELETE"])
+@role_required("admin")
+def delete_agent(user_id):
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if user.role != "agent":
+        return jsonify({"error": "Only agent accounts can be removed here"}), 400
+
+    email = user.email          # keep it before the row is deleted
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({"message": "Agent removed", "email": email})
 
 
 @app.route("/policyholders", methods=["GET"])
