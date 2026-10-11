@@ -1,21 +1,31 @@
-from datetime import date, timedelta
-from sqlalchemy import func
 import os
-import joblib
-import pandas as pd
+from datetime import date, timedelta
+from functools import wraps
+
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import func
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import (
     JWTManager, create_access_token, jwt_required,
     get_jwt, get_jwt_identity, verify_jwt_in_request,
 )
-from functools import wraps
+import joblib
+import pandas as pd
+
+load_dotenv()  # reads the .env file
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///renewal.db"
-app.config["JWT_SECRET_KEY"] = "change-this-secret-later"
-app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=2)
+
+secret = os.environ.get("JWT_SECRET_KEY")
+if not secret:
+    raise RuntimeError("JWT_SECRET_KEY is not set. Add it to your .env file.")
+app.config["JWT_SECRET_KEY"] = secret
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=1)
+
+db = SQLAlchemy(app)
 jwt = JWTManager(app)
 # Load the trained model once, when the server starts
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "renewal_model.joblib")
@@ -27,7 +37,6 @@ except FileNotFoundError:
 # Risk bands based on the chance of renewing
 HIGH_RISK_BELOW = 0.50    # under 50% -> high risk of lapsing
 MEDIUM_RISK_BELOW = 0.70  # 50-70%    -> medium risk
-db = SQLAlchemy(app)
 
 
 class User(db.Model):
@@ -95,38 +104,47 @@ def home():
 @app.route("/register", methods=["POST"])
 
 
+@app.route("/register", methods=["POST"])
 def register():
-    data = request.get_json()  # read the JSON sent by the client
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
 
-    # Reject if this email is already used
-    if User.query.filter_by(email=data["email"]).first():
+    if not name or not email or not password:
+        return jsonify({"error": "name, email and password are required"}), 400
+    if "@" not in email or len(email) > 120:
+        return jsonify({"error": "Enter a valid email address"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    if User.query.filter_by(email=email).first():
         return jsonify({"error": "Email already registered"}), 400
 
+    # The caller can never choose a role: everyone who registers is an agent
     new_user = User(
-        name=data["name"],
-        email=data["email"],
-        password=generate_password_hash(data["password"]),  # store the hash
-        role=data.get("role", "agent"),  # default role is agent
+        name=name,
+        email=email,
+        password=generate_password_hash(password),
+        role="agent",
     )
-    db.session.add(new_user)   # stage the new row
-    db.session.commit()        # save it to the database
+    db.session.add(new_user)
+    db.session.commit()
 
     return jsonify({"message": "User registered successfully"}), 201
 
 
 @app.route("/login", methods=["POST"])
-
-
 def login():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
 
-    user = User.query.filter_by(email=data["email"]).first()
+    user = User.query.filter_by(email=email).first()
 
     # Wrong email OR wrong password -> same message (don't reveal which)
-    if not user or not check_password_hash(user.password, data["password"]):
+    if not user or not check_password_hash(user.password, password):
         return jsonify({"error": "Invalid email or password"}), 401
 
-    # Create the token; store the user's id and role inside it
     token = create_access_token(
         identity=str(user.id),
         additional_claims={"role": user.role},
@@ -618,10 +636,33 @@ def campaign_stats():
 def dashboard():
     return render_template("dashboard.html")
 
+# ---- Details shown on the legal pages. Change these before publishing. ----
+SITE_NAME = "Insurance Renewal Prediction System"
+OPERATOR_NAME = "Ajay Pujari"
+CONTACT_EMAIL = "ajaypujari170@gmail.com"
+LEGAL_UPDATED = "11 October 2026"
+
+
+@app.context_processor
+def inject_site_info():
+    # Makes these values available inside every template
+    return {"site_name": SITE_NAME, "operator_name": OPERATOR_NAME,
+            "contact_email": CONTACT_EMAIL, "updated": LEGAL_UPDATED}
+
+
+@app.route("/privacy")
+def privacy():
+    return render_template("privacy.html")
+
+
+@app.route("/terms")
+def terms():
+    return render_template("terms.html")
+
 
 with app.app_context():
     db.create_all()
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=os.environ.get("FLASK_DEBUG") == "1")

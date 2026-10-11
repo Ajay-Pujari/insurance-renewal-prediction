@@ -1,0 +1,57 @@
+{% extends "base_legal.html" %}
+{% block title %}Terms and Conditions{% endblock %}
+{% block content %}
+<h1>Terms and Conditions</h1>
+<p class="meta">Last updated: {{ updated }}</p>
+
+<h2>Agreeing to these terms</h2>
+<p>By using {{ site_name }} (the "Service") you agree to these terms. If you do not agree,
+please do not use the Service. Our <a href="/privacy">Privacy Policy</a> explains how we
+handle your data.</p>
+
+<h2>What the Service is</h2>
+<p>The Service is a demonstration and academic project run by {{ operator_name }}. It is not
+an insurer, a broker or a financial adviser, and it does not sell or manage real insurance.
+Predictions are statistical estimates produced by a model trained on synthetic data. Do not
+use them to make real decisions about real people, policies or money.</p>
+
+<h2>Accounts</h2>
+<p>You need an account to use the dashboard. Accounts have a role (admin or agent), and each
+role can do different things. Keep your password private, give accurate details, and tell us
+at once if you think someone else has used your account. You are responsible for what is
+done with your account.</p>
+
+<h2>Acceptable use</h2>
+<p>You agree not to:</p>
+<ul>
+  <li>try to break, probe or overload the Service, or send large numbers of automated requests;</li>
+  <li>access accounts or data that you are not allowed to access;</li>
+  <li>enter real personal information about other people;</li>
+  <li>use the Service for anything unlawful.</li>
+</ul>
+
+<h2>Availability and data</h2>
+<p>The Service is a project and may change, be unavailable or be taken down at any time. Data
+in it may be reset or deleted without notice.</p>
+
+<h2>No warranty</h2>
+<p>The Service is provided "as is", without warranties of any kind, to the extent the law
+allows.</p>
+
+<h2>Liability</h2>
+<p>To the extent the law allows, {{ operator_name }} is not liable for any loss that comes
+from using the Service or from relying on its predictions.</p>
+
+<h2>Suspending accounts</h2>
+<p>We may suspend or delete an account that breaks these terms.</p>
+
+<h2>Changes</h2>
+<p>We may update these terms. The date at the top shows when they last changed. If you keep
+using the Service after a change, you accept the new terms.</p>
+
+<h2>Governing law</h2>
+<p>These terms are governed by the laws of India.</p>
+
+<h2>Contact</h2>
+<p>Questions about these terms: <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>.</p>
+{% endblock %}

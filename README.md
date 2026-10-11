@@ -28,11 +28,11 @@ Generate the synthetic data, then train the model:
     python train_model.py        # trains and saves renewal_model.joblib
     python seed_upcoming.py      # 60 policies expiring soon, outcome unknown
 
-Start the server and create the first admin user:
+Create a .env file (see .env.example) with a JWT_SECRET_KEY, create the first admin,
+then start the server:
 
+    python create_admin.py
     python app.py
-    POST /register  {"name": "...", "email": "...", "password": "...", "role": "admin"}
-
 Open the dashboard at http://127.0.0.1:5000/dashboard and log in.
 
 Run the retention campaign (admin), then optionally simulate customer behaviour:
@@ -114,8 +114,7 @@ that the model can find these built-in patterns, not how it would perform on rea
 of renewal. It only demonstrates the tracking pipeline; it is not evidence that real offers work.
 
 ## Known limitations
-- `/register` currently lets a caller choose any role, including admin (development only).
-- The JWT secret key is hard-coded in `app.py` and will move to a `.env` file.
+- - Anyone can self-register, but only as an agent. Admins can only be created with `create_admin.py`.
 - The model is trained once on synthetic data and is not retrained automatically.
 - Campaign "sending" is simulated: offers are recorded but no email or SMS is sent.
 - The dashboard loads Chart.js from a CDN, so it needs an internet connection.
